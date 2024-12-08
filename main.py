@@ -1,35 +1,29 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
+import time
 from typing import List
 from recipe_search import setup_tfidf, find_recipe_tfidf
 import json
 from contextlib import asynccontextmanager
 
-# Globalne
+# global variables
 df = None
 vectorizer = None
 tfidf_matrix = None
 
-class RecognizedProduct(BaseModel):
-    name: str
-    count: int
-
-class Ingredient(BaseModel):
-    name: str
 
 class Recipe(BaseModel):
     title: str
-    ingredients: List[Ingredient]
+    ingredients: List[str]
     instructions: str
     matchedIngredientsCount: int
 
-    
+
 def process_recipe_results(results):
     processed_recipes = []
     for _, row in results.iterrows():
         title = row["title"]
-        raw_ingredients = json.loads(row["ingredients"])
-        ingredients = [Ingredient(name=ingredient) for ingredient in raw_ingredients]
+        ingredients = json.loads(row["ingredients"])
         instructions = " ".join(json.loads(row["directions"]))
         matched_count = row["MatchedCount"]
 
@@ -37,39 +31,46 @@ def process_recipe_results(results):
             title=title,
             ingredients=ingredients,
             instructions=instructions,
-            matchedIngredientsCount=matched_count 
+            matchedIngredientsCount=matched_count,
         )
         processed_recipes.append(recipe)
+
     return processed_recipes
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global df, vectorizer, tfidf_matrix
     data_path = "data/reduced_100000_no_duplicates_filtered__RecipeNLG_dataset.csv"
-    print("[Startup] Ładowanie danych...")
+    print("[Startup] Loading data...")
     df, vectorizer, tfidf_matrix = setup_tfidf(data_path)
-    print("[Startup] Dane załadowane.")
+    print("[Startup] Data loaded.")
     yield  # Zasoby gotowe, aplikacja działa
-    print("[Shutdown] Zwalnianie zasobów...")
+    print("[Shutdown] Releasing the resources...")
+
 
 app = FastAPI(lifespan=lifespan)
 
-@app.post("/recipes/")
-async def get_recipes(ingredients: List[RecognizedProduct], min_recipes: int = 100):
-    if df is None or vectorizer is None or tfidf_matrix is None:
-        raise HTTPException(status_code=500, detail="Dane nie zostały załadowane.")
 
-    search_terms = [product.name for product in ingredients]
-    results = find_recipe_tfidf(search_terms, df, vectorizer, tfidf_matrix, min_recipes)
-    if results.empty:
-        return []
+@app.get("/recipes/")
+async def get_recipes(product: List[str] = Query(...), num_of_recipes: int = 100):
+    if df is None or vectorizer is None or tfidf_matrix is None:
+        raise HTTPException(status_code=500, detail="Data wa not loaded.")
+
+    recognized_products = product
+    start_time = time.time()
+    results = find_recipe_tfidf(
+        recognized_products, df, vectorizer, tfidf_matrix, num_of_recipes
+    )
+    end_time = time.time()
+    print(
+        f"[RecipeSearch] Found {len(results)} recipes in {end_time - start_time:.2f} s."
+    )
 
     recipes = process_recipe_results(results)
-    print(recipes)
     return recipes
+
 
 @app.get("/")
 async def root():
-    print("Serwer działa poprawnie!")  
     return {"status": "Server is running"}
-
